@@ -1,19 +1,19 @@
 import numpy as np
 import cv2
-import requests
 import os
-from collections import defaultdict
-from scipy import stats
-from collections import Counter
-import pickle
 import json
+from collections import defaultdict, Counter
 from pdf2image import convert_from_path
+from typing import List, Tuple
 
-start_page = 7
-end_page = 33
-radius = 12
+START_PAGE = 7
+END_PAGE = 33
+RADIUS = 12
+PAGES_DIR = "pages"
+PUZZLES_DIR = "puzzles"
+JSON_DIR = "json"
 
-colors = {
+COLORS = {
     "GREEN": (0, 171, 79),
     "CYAN": (140, 225, 249),
     "YELLOW": (255, 235, 61),
@@ -33,7 +33,7 @@ colors = {
     "LIGHT_GRAY": (176, 177, 179),
 }
 
-shapes = {
+SHAPES = {
     "orange": np.array([[True, True, True], [True, False, False]]),
     "blue": np.array([[True, True, True, True], [True, False, False, False]]),
     "pink": np.array([[True, True, True, True], [False, True, False, False]]),
@@ -51,16 +51,10 @@ shapes = {
     "off_white": np.array([[True, False], [True, True]]),
     "green": np.array([[True, True, False, False], [False, True, True, True]]),
     "purple": np.array([[True, True, True, True]]),
-    "red": np.array(
-        [
-            [True, True],
-            [True, True],
-            [True, False],
-        ]
-    ),
+    "red": np.array([[True, True], [True, True], [True, False]]),
 }
 
-color_count = {
+COLOR_COUNT = {
     "ORANGE": 4,
     "BLUE": 5,
     "PINK": 5,
@@ -76,38 +70,27 @@ color_count = {
 }
 
 
-def color_distance(c1, c2):
+def color_distance(c1: Tuple, c2: Tuple) -> float:
     return np.sqrt(sum((a - b) ** 2 for a, b in zip(c1, c2)))
 
 
 def find_closest_color(most_common_color):
-    if isinstance(most_common_color, np.ndarray):
-        most_common_color = tuple(most_common_color.astype(int))
-    elif isinstance(most_common_color, list):
-        most_common_color = tuple(most_common_color)
-
-    closest_color_name = None
-    min_distance = float("inf")
-
-    for color_name, color_rgb in colors.items():
-        distance = color_distance(most_common_color, color_rgb)
-        if distance < min_distance:
-            min_distance = distance
-            closest_color_name = color_name
-
-    return closest_color_name
+    if isinstance(most_common_color, (np.ndarray, list)):
+        most_common_color = tuple(map(int, most_common_color))
+    return min(
+        COLORS, key=lambda color: color_distance(most_common_color, COLORS[color])
+    )
 
 
-def create_color_grid(colors_list, grid_width, grid_height):
+def create_color_grid(colors_list: List, grid_width: int, grid_height: int) -> List:
     colors_list = sorted(colors_list, key=lambda x: x[1])
-    grid = [
+    return [
         sorted(
             colors_list[h * grid_width : h * grid_width + grid_width],
             key=lambda x: x[0],
         )
-        for h in range(0, grid_height)
+        for h in range(grid_height)
     ]
-    return grid
 
 
 def get_most_common_color(image, center, radius):
@@ -116,217 +99,203 @@ def get_most_common_color(image, center, radius):
     cv2.circle(mask, center, radius, 255, thickness=-1)
     masked_image = cv2.bitwise_and(image, image, mask=mask)
     pixels = masked_image[mask > 0]
-    if len(pixels) == 0:
+    if not pixels.size:
         return None
     pixels_list = [tuple(pixel) for pixel in pixels]
-    color_counts = Counter(pixels_list)
-    mcc = color_counts.most_common(1)[0][0]
-    for k, v in colors.items():
-        if (mcc[2], mcc[1], mcc[0]) == v:
-            return k
-    assert False
+    most_common_color = Counter(pixels_list).most_common(1)[0][0]
+    for name, rgb in COLORS.items():
+        if (most_common_color[2], most_common_color[1], most_common_color[0]) == rgb:
+            return name
+    raise ValueError("Color not found in predefined list")
 
 
-def rotate_90(matrix):
+def rotate_90(matrix: np.ndarray) -> np.ndarray:
     return np.rot90(matrix, -1)
 
 
-def flip_horizontal(matrix):
+def flip_horizontal(matrix: np.ndarray) -> np.ndarray:
     return np.fliplr(matrix)
 
 
-def flip_vertical(matrix):
+def flip_vertical(matrix: np.ndarray) -> np.ndarray:
     return np.flipud(matrix)
 
 
-def get_all_transformations(shape):
+def get_all_transformations(shape: np.ndarray) -> List:
     transformations = []
     for _ in range(4):
-        transformations.append(shape)
-        transformations.append(flip_horizontal(shape))
-        transformations.append(flip_vertical(shape))
-        transformations.append(flip_horizontal(flip_vertical(shape)))
+        transformations.extend(
+            [
+                shape,
+                flip_horizontal(shape),
+                flip_vertical(shape),
+                flip_horizontal(flip_vertical(shape)),
+            ]
+        )
         shape = rotate_90(shape)
     return transformations
 
 
-def print_grid(grid):
+def print_grid(grid: List) -> None:
     for row in grid:
         print(" ".join(row))
     print()
 
-    filled_grid = np.full_like(grid, "DARK_GRAY")
 
-
-def check_shape_in_grid(transformation, grid, row, col, name):
+def check_shape_in_grid(
+    transformation, grid: List, row: int, col: int, name: str
+) -> bool:
     shape = np.array(transformation["shape"])
     shape_height, shape_width = shape.shape
     if row + shape_height > grid.shape[0] or col + shape_width > grid.shape[1]:
         return False
     subgrid = grid[row : row + shape_height, col : col + shape_width]
     subgrid = np.where(subgrid == name.upper(), True, False)
-
     return np.array_equal(subgrid, shape)
 
 
-def find_shape_location(shape_name, grid, transformation):
+def find_shape_location(
+    shape_name: str, grid: List, transformations: List
+) -> (str, int, int, int):
     for row in range(grid.shape[0]):
         for col in range(grid.shape[1]):
             for idx, transformation in enumerate(transformations):
                 if check_shape_in_grid(transformation, grid, row, col, shape_name):
-                    return (shape_name, row, col, idx)
-    return (shape_name, None, None, None)
+                    return shape_name, row, col, idx
+    return shape_name, None, None, None
 
 
-def get_all_transformations_json(shape):
+def get_all_transformations_json(shape: np.ndarray) -> List:
     transformations = []
     current = shape
     for rotation in range(4):
-        transformations.append(
-            {
-                "rotation": rotation * 90,
-                "flip_horizontal": False,
-                "flip_vertical": False,
-                "shape": current.tolist(),
-            }
-        )
-        transformations.append(
-            {
-                "rotation": rotation * 90,
-                "flip_horizontal": True,
-                "flip_vertical": False,
-                "shape": flip_horizontal(current).tolist(),
-            }
-        )
-        transformations.append(
-            {
-                "rotation": rotation * 90,
-                "flip_horizontal": False,
-                "flip_vertical": True,
-                "shape": flip_vertical(current).tolist(),
-            }
-        )
-        transformations.append(
-            {
-                "rotation": rotation * 90,
-                "flip_horizontal": True,
-                "flip_vertical": True,
-                "shape": flip_horizontal(flip_vertical(current)).tolist(),
-            }
+        transformations.extend(
+            [
+                {
+                    "rotation": rotation * 90,
+                    "flip_horizontal": False,
+                    "flip_vertical": False,
+                    "shape": current.tolist(),
+                },
+                {
+                    "rotation": rotation * 90,
+                    "flip_horizontal": True,
+                    "flip_vertical": False,
+                    "shape": flip_horizontal(current).tolist(),
+                },
+                {
+                    "rotation": rotation * 90,
+                    "flip_horizontal": False,
+                    "flip_vertical": True,
+                    "shape": flip_vertical(current).tolist(),
+                },
+                {
+                    "rotation": rotation * 90,
+                    "flip_horizontal": True,
+                    "flip_vertical": True,
+                    "shape": flip_horizontal(flip_vertical(current)).tolist(),
+                },
+            ]
         )
         current = rotate_90(current)
     return transformations
 
 
-pages = convert_from_path("KanoodleGuide.pdf")
-for page_num, page in enumerate(pages):
-    if page_num >= start_page and page_num <= end_page:
-        page.save(f"pages/page{page_num}.png", "png")
+def main() -> None:
+    pages = convert_from_path("KanoodleGuide.pdf")
+    for page_num, page in enumerate(pages):
+        if START_PAGE <= page_num <= END_PAGE:
+            page.save(f"{PAGES_DIR}/page{page_num}.png", "png")
 
-page_to_puzzles = defaultdict(list)
+    page_to_puzzles = defaultdict(list)
+    for page_file in os.listdir(PAGES_DIR):
+        page_num = int("".join(filter(str.isdigit, page_file))) - START_PAGE
+        img = cv2.imread(f"{PAGES_DIR}/{page_file}")
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        ret, thresh = cv2.threshold(gray, 127, 255, 0)
+        contours, _ = cv2.findContours(thresh, 1, cv2.CHAIN_APPROX_SIMPLE)
 
-for page in os.listdir("pages"):
-    page_num = int("".join([x for x in page if x.isdigit()])) - start_page
-    img = cv2.imread(f"pages/{page}")
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-    ret, thresh = cv2.threshold(gray, 127, 255, 0)
-
-    contours, h = cv2.findContours(thresh, 1, cv2.CHAIN_APPROX_SIMPLE)
-
-    i = 0
-    for cnt in contours:
-        approx = cv2.approxPolyDP(cnt, 0.01 * cv2.arcLength(cnt, True), True)
-        if len(approx) == 4:
-            if i > 0:
-                i += 1
+        for cnt in contours:
+            approx = cv2.approxPolyDP(cnt, 0.01 * cv2.arcLength(cnt, True), True)
+            if len(approx) == 4:
                 x, y, w, h = cv2.boundingRect(cnt)
-
                 if w * h > 35000:
                     ROI = img[y : y + h, x : x + w]
                     page_to_puzzles[page_num].append((x, y, ROI))
-            else:
-                i += 1
 
-for k, v in page_to_puzzles.items():
-    v = sorted(v, key=lambda e: (e[1], e[0]))
-    for puzzle_num in range(0, len(v)):
-        cv2.imwrite(f"puzzles/puzzle{k * 6 + puzzle_num}.png", v[puzzle_num][2])
+    for k, v in page_to_puzzles.items():
+        v = sorted(v, key=lambda e: (e[1], e[0]))
+        for puzzle_num, (_, _, roi) in enumerate(v):
+            cv2.imwrite(f"{PUZZLES_DIR}/puzzle{k * 6 + puzzle_num}.png", roi)
+
+    puzzle_raw = {}
+    puzzle_to_config = defaultdict(list)
+    for puzzle_file in os.listdir(PUZZLES_DIR):
+        puzzle_num = int("".join(filter(str.isdigit, puzzle_file)))
+        img = cv2.imread(f"{PUZZLES_DIR}/{puzzle_file}")
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        circles = cv2.HoughCircles(
+            gray,
+            cv2.HOUGH_GRADIENT,
+            1,
+            10,
+            param1=50,
+            param2=20,
+            minRadius=9,
+            maxRadius=14,
+        )
+
+        if circles is not None:
+            circles = np.round(circles[0, :]).astype("int")
+        if len(circles) != 55:
+            print(f"{puzzle_file} was not detected correctly")
+            continue
+
+        sorted_circles = sorted((x, y) for x, y, _ in circles)
+        grid = create_color_grid(sorted_circles, 11, 5)
+
+        color_grid = [[None] * 11 for _ in range(5)]
+        for r, row in enumerate(grid):
+            for i, center in enumerate(row):
+                most_common_color = get_most_common_color(img, center, RADIUS)
+                color_grid[r][i] = most_common_color
+
+        flatten = [color for row in color_grid for color in row]
+        counter = Counter(flatten)
+        for color, count in COLOR_COUNT.items():
+            assert counter[color] in {0, count}
+
+        puzzle_raw[puzzle_file] = color_grid
+        grid = np.array(color_grid)
+
+        for shape_name, shape in SHAPES.items():
+            transformations = get_all_transformations_json(shape)
+            shape_info = find_shape_location(shape_name, grid, transformations)
+            name, row, col, transformation_index = shape_info
+            if row is not None and col is not None and transformation_index is not None:
+                puzzle_to_config[puzzle_num].append(
+                    {
+                        "piece": name,
+                        "x": col,
+                        "y": row,
+                        "transformation": transformations[transformation_index],
+                    }
+                )
+
+    all_shapes_transformations = {
+        shape_name: get_all_transformations_json(shape)
+        for shape_name, shape in SHAPES.items()
+    }
+
+    os.makedirs(JSON_DIR, exist_ok=True)
+    with open(f"{JSON_DIR}/shapes_transformations.json", "w") as f:
+        json.dump(all_shapes_transformations, f, indent=4)
+    print("Transformations have been saved to 'json/shapes_transformations.json'.")
+
+    with open(f"{JSON_DIR}/puzzle_config.json", "w") as f:
+        json.dump(puzzle_to_config, f, indent=4)
+    print("Puzzle configs have been saved to 'json/puzzle_config.json'.")
 
 
-puzzle_raw = {}
-
-last = None
-
-puzzle_to_config = defaultdict(list)
-
-for puzzle in os.listdir("puzzles"):
-    last = puzzle
-    puzzle_num = int("".join([x for x in puzzle if x.isdigit()]))
-
-    img = cv2.imread(f"puzzles/{puzzle}")
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-    circles = cv2.HoughCircles(
-        gray, cv2.HOUGH_GRADIENT, 1, 10, param1=50, param2=20, minRadius=9, maxRadius=14
-    )
-
-    sorted_circles = []
-
-    if circles is not None:
-        circles = np.round(circles[0, :]).astype("int")
-
-    if len(circles) != 55:
-        print(f"{puzzle} was not detected correctly")
-        continue
-
-    for x, y, r in circles:
-        sorted_circles.append((x, y))
-    grid = create_color_grid(list(sorted_circles), 11, 5)
-
-    color_grid = [[None for _ in range(11)] for _ in range(5)]
-
-    for r in range(len(grid)):
-        for i, center in enumerate(grid[r]):
-            most_common_color = get_most_common_color(img, center, radius)
-            color_grid[r][i] = most_common_color
-
-    flatten = sum(color_grid, [])
-    counter = Counter(flatten)
-
-    for color, count in color_count.items():
-        assert counter[color] == 0 or counter[color] == count
-
-    puzzle_raw[puzzle] = color_grid
-
-    grid = np.array(color_grid)
-
-    for shape_name, shape in shapes.items():
-        transformations = get_all_transformations_json(shape)
-        shape_info = find_shape_location(shape_name, grid, transformations)
-        name, row, col, transformation_index = shape_info
-
-        if row is not None and col is not None and transformation_index is not None:
-            puzzle_to_config[puzzle_num].append(
-                {
-                    "piece": name,
-                    "x": col,
-                    "y": row,
-                    "transformation": transformations[transformation_index],
-                }
-            )
-
-
-all_shapes_transformations = {}
-
-for shape_name, shape in shapes.items():
-    transformations = get_all_transformations_json(shape)
-    all_shapes_transformations[shape_name] = transformations
-
-with open("json/shapes_transformations.json", "w") as f:
-    json.dump(all_shapes_transformations, f, indent=4)
-print("Transformations have been saved to 'json/shapes_transformations.json'.")
-
-with open("json/puzzle_config.json", "w") as f:
-    json.dump(puzzle_to_config, f, indent=4)
-print("Puzzle configs have been saved to 'json/puzzle_config.json'.")
+if __name__ == "__main__":
+    main()
