@@ -37,8 +37,6 @@ struct Transformation {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let data = fs::read_to_string("json/puzzle_config.json")?;
 
-    let puzzles: Value = serde_json::from_str(&data)?;
-
     let transform_data = fs::read_to_string("json/shapes_transformations.json")?;
     let transformation_map: HashMap<String, Vec<Transformation>> = serde_json::from_str(&transform_data)?;
 
@@ -49,48 +47,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .collect();
 
-    let puzzle_number = "15";
-    
-    if let Some(puzzle_data) = puzzles.get(puzzle_number) {
-        let current_pieces: Vec<CurrentPiece> = serde_json::from_value(puzzle_data.clone())?;
+    let puzzles: Value = serde_json::from_str(&data)?;
 
-        let mut grid = vec![vec![None; GRID_WIDTH]; GRID_HEIGHT];
+    let mut solved = 0;
 
-        for piece in &current_pieces {
-            place_piece(&mut grid, &piece.transformation.shape, piece.x, piece.y, true, &piece.piece);
-        }
+    for p in 0..=161 {
+        println!("Puzzle: {}", p);
+        if let Some(puzzle_data) = puzzles.get(p.to_string()) {
+            let current_pieces: Vec<CurrentPiece> = serde_json::from_value(puzzle_data.clone())?;
 
-        print_grid(&grid);
+            let mut grid = vec![vec![None; GRID_WIDTH]; GRID_HEIGHT];
 
-        println!();
-
-        let mut found_solution = false;
-
-        let len = possible_pieces.len();
-        for i in 0..len {
-            let mut new_grid = grid.clone();
-            if place_pieces_backtrack(&mut new_grid, &possible_pieces, i) {
-                grid = new_grid;
-                found_solution = true;
-                for row in &grid {
-                    for cell in row {
-                        match cell {
-                            Some(ref piece_name) => print!("{} ", color_square(piece_name)),
-                            None => print!("{} ", color_square("dark_gray")),
-                        }
-                    }
-                    println!();
-                }
-                break;
+            for piece in &current_pieces {
+                place_piece(&mut grid, &piece.transformation.shape, piece.x, piece.y, true, &piece.piece);
             }
-        } 
-        
-        if !found_solution {
-            println!("No solution found!");
+
+            // print_grid(&grid);
+
+            println!();
+
+            let mut found_solution = false;
+
+            let len = possible_pieces.len();
+            for i in 0..len {
+                let mut new_grid = grid.clone();
+                if place_pieces_backtrack(&mut new_grid, &possible_pieces, i) {
+                    grid = new_grid;
+                    found_solution = true;
+                    // print_grid(&grid);
+                    solved += 1;
+                    break;
+                }
+            } 
+            
+            if !found_solution {
+                println!("No solution found!");
+            }
+        } else {
+            println!("Puzzle not found!");
         }
-    } else {
-        println!("Puzzle not found!");
+
     }
+
+    println!("Solved {} out of 161", solved);
 
     Ok(())
 }
