@@ -215,13 +215,32 @@ def main() -> None:
         ret, thresh = cv2.threshold(gray, 127, 255, 0)
         contours, _ = cv2.findContours(thresh, 1, cv2.CHAIN_APPROX_SIMPLE)
 
+        squares = 0
         for cnt in contours:
             approx = cv2.approxPolyDP(cnt, 0.01 * cv2.arcLength(cnt, True), True)
-            if len(approx) == 4:
-                x, y, w, h = cv2.boundingRect(cnt)
-                if w * h > 35000:
-                    ROI = img[y : y + h, x : x + w]
-                    page_to_puzzles[page_num].append((x, y, ROI))
+            x, y, w, h = cv2.boundingRect(cnt)
+            if w * h > 35000 and w * h < 45000:
+                squares += 1
+                ROI = img[y : y + h, x : x + w]
+                page_to_puzzles[page_num].append((x, y, ROI))
+            # if len(approx) == 4:
+            #     x, y, w, h = cv2.boundingRect(cnt)
+            #     # print(w * h)
+            #     if w * h > 35000 and w * h < 45000:
+            #         squares += 1
+            #         ROI = img[y : y + h, x : x + w]
+            #         page_to_puzzles[page_num].append((x, y, ROI))
+            # else:
+            #     x, y, w, h = cv2.boundingRect(cnt)
+            #     print("area ", w * h)
+            #     print("len ", len(approx))
+
+        if squares != 6:
+            # print(squares)
+            print("page", page_file)
+            # print(contours)
+            cv2.imshow("aa", gray)
+            cv2.waitKey()
 
     for k, v in page_to_puzzles.items():
         v = sorted(v, key=lambda e: (e[1], e[0]))

@@ -81,11 +81,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("No solution found!");
             }
         } else {
-            println!("Puzzle not found!");
+            println!("Puzzle {} not found!", p);
         }
     }
 
-    println!("Solved {} out of 161", solved);
+    println!("Solved {} out of 162", solved);
     Ok(())
 }
 
@@ -100,7 +100,7 @@ fn place_pieces_backtrack(
     }
 
     let piece = &pieces[index];
-    
+
     if used_pieces.contains(&piece.piece) {
         return place_pieces_backtrack(grid, pieces, index + 1, used_pieces);
     }
