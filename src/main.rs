@@ -1,7 +1,9 @@
 use ansi_term::Colour;
 use serde::Deserialize;
 use serde_json::{self, Value};
-use std::{collections::{HashMap, HashSet}, fs};
+use std::{collections::{HashMap, HashSet}, fs, ops::Div, time::{Duration, Instant}};
+use rayon::prelude::*;
+use std::sync::Arc;
 
 const PRINT_CHAR: &str = "●";
 const GRID_WIDTH: usize = 11;
@@ -35,11 +37,36 @@ struct Transformation {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+
+    let (pieces, puzzles) = load_data()?;
+
+    let num_trials: usize = 5;
+
+    let mut st_average = Duration::new(0, 0);
+    for _ in 0..num_trials {
+        let before = Instant::now();
+        let _ = single_thread_solve(&pieces, &puzzles);
+        st_average += before.elapsed();
+    }
+    println!("Single-threaded average over {} trials: {:.2?}s", num_trials, st_average.div_f32(num_trials as f32));
+
+    let mut st_average = Duration::new(0, 0);
+    for _ in 0..num_trials {
+        let before = Instant::now();
+        let _ = multi_threaded_solve(&pieces, &puzzles);
+        st_average += before.elapsed();
+    }
+    println!("Multi-threaded average over {} trials: {:.2?}s", num_trials, st_average.div_f32(num_trials as f32));
+    
+    Ok(())
+}
+
+fn load_data() -> Result<(Vec<PossiblePiece>, Value), Box<dyn std::error::Error>> {
     let data = fs::read_to_string("json/puzzle_config.json")?;
     let transform_data = fs::read_to_string("json/shapes_transformations.json")?;
     let transformation_map: HashMap<String, Vec<Transformation>> = serde_json::from_str(&transform_data)?;
 
-    let possible_pieces: Vec<PossiblePiece> = transformation_map.into_iter()
+    let pieces: Vec<PossiblePiece> = transformation_map.into_iter()
         .map(|(piece_name, transformations)| PossiblePiece {
             piece: piece_name,
             all_transformations: transformations,
@@ -47,10 +74,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .collect();
 
     let puzzles: Value = serde_json::from_str(&data)?;
+    Ok((pieces, puzzles))
+}
+
+fn single_thread_solve(possible_pieces: &Vec<PossiblePiece>, puzzles: &Value) ->  Result<(), Box<dyn std::error::Error>> {
     let mut solved = 0;
 
     for p in 0..=161 {
-        println!("Puzzle: {}", p);
+        // println!("Puzzle: {}", p);
         if let Some(puzzle_data) = puzzles.get(p.to_string()) {
             let current_pieces: Vec<CurrentPiece> = serde_json::from_value(puzzle_data.clone())?;
             let mut grid = vec![vec!["dark_gray".to_string(); GRID_WIDTH]; GRID_HEIGHT];
@@ -85,9 +116,53 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    println!("Solved {} out of 162", solved);
+    // println!("Solved {} out of 162", solved);
     Ok(())
 }
+
+fn multi_threaded_solve(possible_pieces: &Vec<PossiblePiece>, puzzles: &Value) -> Result<(), Box<dyn std::error::Error>> {
+    let num_cpus = num_cpus::get();
+    let puzzle_nums: Vec<_> = (0..=161).collect();
+    let possible_pieces = Arc::new(possible_pieces);
+
+    let solved_count = puzzle_nums.par_chunks(num_cpus).into_par_iter().filter_map(|puzzle_batch| {
+        let possible_pieces = Arc::clone(&possible_pieces);
+        
+        let mut batch_solved = 0;
+
+        for &p in puzzle_batch {
+            if let Some(puzzle_data) = puzzles.get(p.to_string()) {
+                let current_pieces: Vec<CurrentPiece> = serde_json::from_value(puzzle_data.clone()).unwrap();
+                let mut grid = vec![vec!["dark_gray".to_string(); GRID_WIDTH]; GRID_HEIGHT];
+
+                for piece in &current_pieces {
+                    place_piece(&mut grid, &piece.transformation.shape, piece.x, piece.y, true, &piece.piece);
+                }
+
+                let current_piece_set: HashSet<String> = current_pieces.iter()
+                    .map(|l| l.piece.clone())
+                    .collect();
+
+                let remaining_pieces: Vec<PossiblePiece> = possible_pieces.iter()
+                    .filter(|e| !current_piece_set.contains(&e.piece))
+                    .cloned()
+                    .collect();
+
+                let mut used_pieces = HashSet::new();
+                if place_pieces_backtrack(&mut grid, &remaining_pieces, 0, &mut used_pieces) {
+                    batch_solved += 1;
+                }
+            } else {
+                println!("Puzzle {} not found!", p);
+            }
+        }
+        Some(batch_solved)
+    }).sum::<usize>();
+
+    // println!("Solved {} out of 162", solved_count);
+    Ok(())
+}
+
 
 fn place_pieces_backtrack(
     grid: &mut Vec<Vec<String>>,
