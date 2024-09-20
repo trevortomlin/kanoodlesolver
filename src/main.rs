@@ -1,7 +1,7 @@
 use ansi_term::Colour;
 use serde::Deserialize;
 use serde_json::{self, Value};
-use std::{collections::HashMap, fs};
+use std::{collections::{HashMap, HashSet}, fs};
 
 const PRINT_CHAR: &str = "●";
 const GRID_WIDTH: usize = 11;
@@ -20,7 +20,7 @@ struct CurrentPiece {
     transformation: Transformation,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 struct PossiblePiece {
     piece: String,
     all_transformations: Vec<Transformation>,
@@ -36,7 +36,6 @@ struct Transformation {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let data = fs::read_to_string("json/puzzle_config.json")?;
-
     let transform_data = fs::read_to_string("json/shapes_transformations.json")?;
     let transformation_map: HashMap<String, Vec<Transformation>> = serde_json::from_str(&transform_data)?;
 
@@ -48,78 +47,63 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .collect();
 
     let puzzles: Value = serde_json::from_str(&data)?;
-
     let mut solved = 0;
 
     for p in 0..=161 {
         println!("Puzzle: {}", p);
         if let Some(puzzle_data) = puzzles.get(p.to_string()) {
             let current_pieces: Vec<CurrentPiece> = serde_json::from_value(puzzle_data.clone())?;
-
-            let mut grid = vec![vec![None; GRID_WIDTH]; GRID_HEIGHT];
+            let mut grid = vec![vec!["dark_gray".to_string(); GRID_WIDTH]; GRID_HEIGHT];
 
             for piece in &current_pieces {
                 place_piece(&mut grid, &piece.transformation.shape, piece.x, piece.y, true, &piece.piece);
             }
 
-            // print_grid(&grid);
-
-            println!();
-
             let mut found_solution = false;
 
-            let len = possible_pieces.len();
-            for i in 0..len {
-                let mut new_grid = grid.clone();
-                if place_pieces_backtrack(&mut new_grid, &possible_pieces, i) {
-                    grid = new_grid;
-                    found_solution = true;
-                    // print_grid(&grid);
-                    solved += 1;
-                    break;
-                }
-            } 
-            
+            let current_piece_set: HashSet<String> = current_pieces.iter()
+                .map(|l| l.piece.clone())
+                .collect();
+
+            let possible_pieces: Vec<PossiblePiece> = possible_pieces.iter()
+                .filter(|e| !current_piece_set.contains(&e.piece))
+                .cloned() 
+                .collect();
+
+            let mut used_pieces = HashSet::new();
+
+            if place_pieces_backtrack(&mut grid, &possible_pieces, 0, &mut used_pieces) {
+                found_solution = true;
+                solved += 1;
+            }
+
             if !found_solution {
                 println!("No solution found!");
             }
         } else {
             println!("Puzzle not found!");
         }
-
     }
 
     println!("Solved {} out of 161", solved);
-
     Ok(())
 }
 
-fn print_grid(grid: &Vec<Vec<Option<String>>>) {
-    for row in grid {
-        for cell in row {
-            match cell {
-                Some(piece_name) => print!("{} ", color_square(piece_name)),
-                None => print!("{} ", color_square("dark_gray")),
-            }
-        }
-        println!();
-    }
-}
-
 fn place_pieces_backtrack(
-    grid: &mut Vec<Vec<Option<String>>>,
+    grid: &mut Vec<Vec<String>>,
     pieces: &[PossiblePiece],
     index: usize,
+    used_pieces: &mut HashSet<String>,
 ) -> bool {
-
     if index == pieces.len() {
-        return false;
-    }
-    if is_grid_filled(grid) {
-        return true;
+        return is_grid_filled(grid);
     }
 
     let piece = &pieces[index];
+    
+    if used_pieces.contains(&piece.piece) {
+        return place_pieces_backtrack(grid, pieces, index + 1, used_pieces);
+    }
 
     for transformation in &piece.all_transformations {
         let shape = &transformation.shape;
@@ -128,12 +112,14 @@ fn place_pieces_backtrack(
             for x in 0..GRID_WIDTH {
                 if can_place_piece(grid, shape, x, y) {
                     place_piece(grid, shape, x, y, true, &piece.piece);
+                    used_pieces.insert(piece.piece.clone());
 
-                    if place_pieces_backtrack(grid, pieces, index + 1) {
+                    if place_pieces_backtrack(grid, pieces, index + 1, used_pieces) {
                         return true;
                     }
 
                     place_piece(grid, shape, x, y, false, &piece.piece);
+                    used_pieces.remove(&piece.piece);
                 }
             }
         }
@@ -143,7 +129,7 @@ fn place_pieces_backtrack(
 }
 
 fn can_place_piece(
-    grid: &Vec<Vec<Option<String>>>,
+    grid: &Vec<Vec<String>>,
     shape: &Vec<Vec<bool>>,
     start_x: usize,
     start_y: usize,
@@ -154,7 +140,7 @@ fn can_place_piece(
                 let x = start_x + j;
                 let y = start_y + i;
 
-                if y >= GRID_HEIGHT || x >= GRID_WIDTH || grid[y][x].is_some() {
+                if y >= GRID_HEIGHT || x >= GRID_WIDTH || grid[y][x] != "dark_gray" {
                     return false;
                 }
             }
@@ -163,7 +149,7 @@ fn can_place_piece(
     true
 }
 
-fn place_piece(grid: &mut Vec<Vec<Option<String>>>, shape: &Vec<Vec<bool>>, x: usize, y: usize, place: bool, piece_name: &str) {
+fn place_piece(grid: &mut Vec<Vec<String>>, shape: &Vec<Vec<bool>>, x: usize, y: usize, place: bool, piece_name: &str) {
     for (i, row) in shape.iter().enumerate() {
         for (j, &cell) in row.iter().enumerate() {
             if cell {
@@ -172,9 +158,9 @@ fn place_piece(grid: &mut Vec<Vec<Option<String>>>, shape: &Vec<Vec<bool>>, x: u
 
                 if grid_y < GRID_HEIGHT && grid_x < GRID_WIDTH {
                     if place {
-                        grid[grid_y][grid_x] = Some(piece_name.to_string());
+                        grid[grid_y][grid_x] = piece_name.to_string();
                     } else {
-                        grid[grid_y][grid_x] = Some("dark_gray".to_string());
+                        grid[grid_y][grid_x] = "dark_gray".to_string();
                     }
                 }
             }
@@ -182,10 +168,10 @@ fn place_piece(grid: &mut Vec<Vec<Option<String>>>, shape: &Vec<Vec<bool>>, x: u
     }
 }
 
-fn is_grid_filled(grid: &Vec<Vec<Option<String>>>) -> bool {
+fn is_grid_filled(grid: &Vec<Vec<String>>) -> bool {
     for row in grid {
         for cell in row {
-            if cell.is_none() {
+            if cell == "dark_gray" {
                 return false;
             }
         }
@@ -213,5 +199,14 @@ fn color_square(color: &str) -> String {
             println!("{}", a);
             Colour::White.paint(PRINT_CHAR).to_string()
         }
+    }
+}
+
+fn print_grid(grid: &Vec<Vec<String>>) {
+    for row in grid {
+        for cell in row {
+            print!("{} ", color_square(cell));
+        }
+        println!();
     }
 }
